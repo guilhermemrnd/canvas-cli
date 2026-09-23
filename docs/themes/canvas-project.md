@@ -1,0 +1,314 @@
+# Theme: Canvas Project · `CP`
+
+> A canvas lives as plain files in the developer's own folder — pages, boards and their layout — so the agent can write it, the viewer can render it and git can hold it.
+
+## Key Decisions
+
+| # | Question | Decision |
+|---|----------|----------|
+| 1 | Where does a canvas live? | In a `.canvas/` folder at the root of the working directory. Plain files only: no database, no network, no account. |
+| 2 | Who owns the state? | The files. The viewer is read-only and keeps nothing the files cannot rebuild. |
+| 3 | Who places boards on the canvas? | The tool. The agent gives each board a size; position is derived from page order unless the agent sets it. |
+| 4 | Does a page or board have a fallback name? | No. Every page and board is named in the index; a missing name is a validation error, never a substituted label. |
+| 5 | Does a new project start with a page? | No. A new project has zero pages; the agent adds the first. An invented default name would be a label nobody chose. |
+
+## Scale Envelope
+
+| Quantity / limit | Committed value | At the ceiling |
+|---|---|---|
+| Pages per project | 40 | `add-page` refuses and names the limit; validation reports the excess |
+| Boards per project | 100 | `add-board` refuses and names the limit; validation reports the excess |
+| Board size | 40–8000 px per side | validation rejects it and names the board |
+| Board file size | 2 MB | validation rejects it and names the board |
+
+**Timing.** A saved change is visible in the viewer within 1 second (→ CV-4). Boards far outside the visible area may show a placeholder until the developer pans near them.
+**On failure.** A rejected command changes nothing on disk. A half-written or invalid file never replaces the last good render.
+
+> Values are proposed and unconfirmed: see OQ-CP-1.
+
+---
+
+## Epic CP-1: Create a Canvas Project
+
+> Start a canvas in the current folder.
+
+**Status:** Planned
+
+### User Story CP-1-S1
+
+As a developer, I want the agent to start a canvas in my project folder so that designs live next to the code they describe.
+
+### Contract
+
+**Project files**
+
+| Path | What it is | Written by |
+|---|---|---|
+| `.canvas/canvas.json` | The index: title, pages, boards, order, launch page | the tool and the agent |
+| `.canvas/tokens.css` | The shared design values every board reads | the agent (→ AB-3) |
+| `.canvas/boards/<name>.html` | One file per board | the agent |
+| `.canvas/assets/` | Fonts and images boards refer to | the agent |
+
+**Index — `canvas.json`**
+
+| Field | Type | Required | Rules / values | Notes |
+|---|---|---|---|---|
+| Title | text | Yes | Non-empty | Given to `init` |
+| Pages | list | Yes | Each has an id and a name; up to 40 | May be empty |
+| Boards | map | Yes | Keyed by board file name; each has page, title, width, height, optional x and y | May be empty |
+| Order | list of file names | Yes | Every board once; back to front, and the page's reading order | — |
+| Launch page | page id | No | Must exist | Absent: the first page opens |
+
+### Acceptance Criteria
+
+#### CP-1-S1.1 — Create a project
+
+Given I am in a folder with no canvas project,
+when the agent runs `init` with a title,
+then `.canvas/` exists with an index holding that title, zero pages and zero boards, and an empty tokens file.
+
+#### CP-1-S1.2 — Title is required
+
+Given I am in a folder with no canvas project,
+when the agent runs `init` without a title,
+then nothing is created and the command says a title is required.
+
+#### CP-1-S1.3 — Existing project is never overwritten
+
+Given `.canvas/canvas.json` already exists,
+when the agent runs `init`,
+then nothing is changed and the command reports the existing project's title and where it is.
+
+#### CP-1-S1.4 — Half a project
+
+Given `.canvas/` exists without an index,
+when the agent runs `init`,
+then nothing is changed and the command names what it found and asks for it to be removed or repaired by hand.
+
+#### CP-1-S1.5 — Run from a subfolder
+
+Given a canvas project exists in a parent folder of where the agent runs any command,
+when the command runs,
+then it uses the nearest project above, and says which one.
+
+Why: agents change directory; a command that silently creates a second project in a subfolder splits the canvas.
+
+### Out of Scope
+
+- Multiple canvases in one folder.
+- Importing a Claude Design canvas or any other file format.
+- Opening or migrating a project from a different tool version (the index carries a version for later).
+
+---
+
+## Epic CP-2: Organise Boards into Pages
+
+> Group boards into named pages by area of the product.
+
+**Status:** Planned
+
+### User Story CP-2-S1
+
+As a developer, I want boards grouped into pages such as "Checkout" or "Settings" so that I can find a screen without scrolling one huge canvas.
+
+### Contract
+
+**Page**
+
+| Field | Type | Required | Rules / values | Notes |
+|---|---|---|---|---|
+| Id | text | Yes | 1–40 letters, digits, `-` or `_`; unique; never reused after removal | Generated by `add-page` from the name |
+| Name | text | Yes | Non-empty; unique among pages | Shown on the page tab |
+
+### Acceptance Criteria
+
+#### CP-2-S1.1 — Add a page
+
+Given a project exists,
+when the agent runs `add-page` with a name,
+then the page appears last in the page list and its id is printed.
+
+#### CP-2-S1.2 — Zero pages
+
+Given a project has zero pages,
+when the agent runs `add-board`,
+then nothing is created and the command says a page must exist first.
+
+Why: a default page would carry a name the developer never chose.
+
+#### CP-2-S1.3 — Duplicate name
+
+Given a page named "Settings" exists,
+when the agent runs `add-page` with the name "Settings",
+then nothing is created and the command says the name is taken.
+
+#### CP-2-S1.4 — Page removed by editing the index
+
+Given a page still has boards assigned to it,
+when the agent removes the page from the index,
+then validation reports each of those boards as belonging to no page, and the viewer does not show them.
+
+Why: deleting boards along with a page would destroy files the agent did not mention.
+
+#### CP-2-S1.5 — Page with no boards
+
+Given a page has no boards,
+when the developer opens it,
+then the viewer shows the page as empty (→ CV-1).
+
+### Out of Scope
+
+- A command to rename or remove a page; both are edits to the index.
+- Nested pages or folders of pages.
+- Moving a board between pages from the viewer.
+
+---
+
+## Epic CP-3: Place Boards on the Canvas
+
+> Add boards at a real size and let the tool lay them out.
+
+**Status:** Planned
+
+### User Story CP-3-S1
+
+As a developer, I want each board drawn at a real size and laid out without overlap so that I read the canvas the way I would a Figma page.
+
+### Contract
+
+**Layout rule.** Boards on a page flow left to right in Order, 80 px apart. A row wraps when the next board would take it past 8000 px, and rows are 120 px apart. A board with its own x and y keeps them and takes no part in the flow.
+
+**Board entry**
+
+| Field | Type | Required | Rules / values | Notes |
+|---|---|---|---|---|
+| File | text | Yes | Ends `.html`, under `boards/`; starts with a letter or digit; letters, digits, `.`, `-`, `_` only; unique | The map key |
+| Page | page id | Yes | An existing page | — |
+| Title | text | Yes | Non-empty | Names the screen or flow and its scope |
+| Width, Height | number | Yes | 40–8000 px | The board's real size |
+| X, Y | number | No | — | Absent: derived by the layout rule |
+
+### Acceptance Criteria
+
+#### CP-3-S1.1 — Add a board
+
+Given a page exists,
+when the agent runs `add-board` with a page, a title and a size,
+then a board file is created at that size, the index lists it last in Order, and the file name is printed.
+
+#### CP-3-S1.2 — Scaffold matches the size
+
+Given `add-board` succeeded,
+when the file is opened,
+then its root element has exactly the board's width and height and reads the shared tokens.
+
+#### CP-3-S1.3 — Automatic layout
+
+Given several boards on one page and none with an x or y,
+when the viewer shows the page,
+then they sit in Order, left to right, without overlap.
+
+#### CP-3-S1.4 — Explicit position wins
+
+Given a board has an x and y,
+when the viewer shows the page,
+then it sits exactly there, and the boards without positions flow around the rest in Order.
+
+#### CP-3-S1.5 — Size out of range
+
+Given a size below 40 or above 8000 px on either side,
+when the agent runs `add-board`, or validation reads the index,
+then the board is refused, or reported, with the limit named.
+
+Why: the viewer would otherwise crop or shrink it without saying so.
+
+#### CP-3-S1.6 — Board whose file is gone
+
+Given the index lists a board whose file does not exist,
+when the viewer shows the page,
+then the board's slot is shown as missing, with its title, and validation reports the file.
+
+#### CP-3-S1.7 — File with no entry
+
+Given a file exists under `boards/` that the index does not list,
+when validation runs,
+then it is reported as unlisted, and the viewer does not show it.
+
+### Out of Scope
+
+- Drag-to-move or resize boards in the viewer.
+- Guides, grids and snapping.
+- Print sizes and pagination.
+
+---
+
+## Epic CP-4: Validate a Project
+
+> Tell the agent, before the developer looks, what is wrong with the files.
+
+**Status:** Planned
+
+### User Story CP-4-S1
+
+As an agent, I want a check that names every problem in the files so that I fix them before telling the developer the design is ready.
+
+### Contract
+
+**Findings.** Each names the file, what is wrong and what to change. An error makes the command exit non-zero; a warning does not. `--json` prints the same findings as a list.
+
+| Check | Severity |
+|---|---|
+| Index is missing, unreadable or not valid | Error |
+| Page or board has no name, or an id or file name breaks its rules | Error |
+| Board refers to a missing page, or to a missing file | Error |
+| Size, count or file-size limit exceeded | Error |
+| File under `boards/` the index does not list | Warning |
+| Board file breaks a rule of the board format (→ AB-1, AB-2, AB-4) | Error |
+| A design value in a board that is not read from the tokens (→ AB-3) | Warning |
+
+### Acceptance Criteria
+
+#### CP-4-S1.1 — Clean project
+
+Given a project with no problems,
+when the agent runs `validate`,
+then it reports no findings and exits zero.
+
+#### CP-4-S1.2 — Zero boards
+
+Given a project with zero pages, or pages with no boards,
+when the agent runs `validate`,
+then it reports no findings and exits zero.
+
+#### CP-4-S1.3 — Every problem at once
+
+Given several problems in different files,
+when the agent runs `validate`,
+then all are reported in one run, not one at a time.
+
+#### CP-4-S1.4 — Warnings do not fail
+
+Given only warnings,
+when the agent runs `validate`,
+then they are listed and the command exits zero.
+
+#### CP-4-S1.5 — Read only
+
+Given any project,
+when the agent runs `validate`,
+then no file is changed.
+
+### Out of Scope
+
+- Repairing problems automatically.
+- Checking that a design matches the guidelines beyond the token check.
+
+---
+
+## Open Questions
+
+### OQ-CP-1 — Confirm the envelope
+
+**Question:** Are 40 pages, 100 boards, 2 MB per board file and 8000 px per side the limits? They follow what Claude Design enforces (40 pages, 8000 px, 512 files) and are tighter on boards; nothing else here depends on the exact numbers.
+**Blocks:** CP-2-S1, CP-3-S1.5, CP-4-S1
+**Raised:** 2026-09-23
